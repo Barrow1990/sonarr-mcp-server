@@ -22,6 +22,11 @@ import server  # noqa: E402
 def mock_sonarr(monkeypatch):
     """Point server.client at a fake Sonarr.
 
+    Also stubs server.discovery_client (the unversioned GET /api endpoint)
+    to report the configured SONARR_API_VERSION as current, so /ready tests
+    that don't care about version drift aren't affected by it. Use
+    mock_discovery to override that.
+
     Usage:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=[...])
@@ -30,12 +35,37 @@ def mock_sonarr(monkeypatch):
 
     def _install(handler):
         fake_client = httpx.Client(
-            base_url=f"{server.SONARR_URL}/api/v3",
+            base_url=f"{server.SONARR_URL}/api/{server.SONARR_API_VERSION}",
             headers={"X-Api-Key": server.SONARR_API_KEY},
             transport=httpx.MockTransport(handler),
         )
         monkeypatch.setattr(server, "client", fake_client)
+
+        fake_discovery = httpx.Client(
+            base_url=server.SONARR_URL,
+            transport=httpx.MockTransport(
+                lambda req: httpx.Response(200, json={"current": server.SONARR_API_VERSION, "deprecated": []})
+            ),
+        )
+        monkeypatch.setattr(server, "discovery_client", fake_discovery)
+
         return fake_client
+
+    return _install
+
+
+@pytest.fixture
+def mock_discovery(monkeypatch):
+    """Override server.discovery_client's response, e.g. to simulate a Sonarr
+    that no longer serves the configured SONARR_API_VERSION."""
+
+    def _install(handler):
+        fake_discovery = httpx.Client(
+            base_url=server.SONARR_URL,
+            transport=httpx.MockTransport(handler),
+        )
+        monkeypatch.setattr(server, "discovery_client", fake_discovery)
+        return fake_discovery
 
     return _install
 

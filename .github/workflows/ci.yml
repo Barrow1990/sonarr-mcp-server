@@ -51,13 +51,23 @@ jobs:
       - name: Compute lowercase image name
         run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
+      # Read from server.py rather than duplicating it in workflow config, so
+      # the two can't drift out of sync.
+      - name: Read Sonarr API version this build targets
+        run: |
+          API_VERSION=$(python3 -c "import re; print(re.search(r'os\.environ\.get\\(\"SONARR_API_VERSION\", \"([^\"]+)\"\\)', open('server.py').read()).group(1))")
+          echo "SONARR_API_VERSION=$API_VERSION" >> "$GITHUB_ENV"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          build-args: |
+            SONARR_API_VERSION=${{ env.SONARR_API_VERSION }}
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:sonarr-${{ env.SONARR_API_VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

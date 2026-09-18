@@ -7,14 +7,23 @@ browse your library, check for missing episodes, look up new series, and
 trigger downloads via Sonarr's REST API.
 
 Configuration is via environment variables:
-  SONARR_URL      e.g. http://192.168.1.50:8989 (required)
-  SONARR_API_KEY  Sonarr > Settings > General > API Key (required)
-  MCP_HOST        interface to bind to (default 0.0.0.0)
-  MCP_PORT        port to listen on (default 8931)
-  MCP_AUTH_TOKEN  shared secret required as `Authorization: Bearer <token>`
-                  on every request (optional — if unset, the server is open
-                  to anyone who can reach it; see README for why that's a
-                  real trade-off, not just a default to ignore)
+  SONARR_URL          e.g. http://192.168.1.50:8989 (required)
+  SONARR_API_KEY      Sonarr > Settings > General > API Key (required)
+  SONARR_API_VERSION  Sonarr REST API version to call, e.g. "v3" (default "v3")
+  MCP_HOST            interface to bind to (default 0.0.0.0)
+  MCP_PORT            port to listen on (default 8931)
+  MCP_AUTH_TOKEN      shared secret required as `Authorization: Bearer <token>`
+                      on every request (optional — if unset, the server is open
+                      to anyone who can reach it; see README for why that's a
+                      real trade-off, not just a default to ignore)
+
+Sonarr exposes an unauthenticated, unversioned `GET /api` endpoint (see
+NzbDrone.Http.ApiInfoController in the Sonarr source) that reports which API
+version is current and which are deprecated, e.g. {"current": "v3",
+"deprecated": []}. GET /ready calls it and compares SONARR_API_VERSION
+against that response, so a Sonarr upgrade that drops the version this
+server is calling shows up as a readiness failure instead of every tool
+call silently 404ing.
 
 Transport: streamable-http. This runs as a standing network service (bind
 0.0.0.0 inside the container; publish the port only on your internal
@@ -51,15 +60,20 @@ def _require_env(name: str) -> str:
 
 SONARR_URL = _require_env("SONARR_URL").rstrip("/")
 SONARR_API_KEY = _require_env("SONARR_API_KEY")
+SONARR_API_VERSION = os.environ.get("SONARR_API_VERSION", "v3")
 MCP_HOST = os.environ.get("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8931"))
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN")
 
 client = httpx.Client(
-    base_url=f"{SONARR_URL}/api/v3",
+    base_url=f"{SONARR_URL}/api/{SONARR_API_VERSION}",
     headers={"X-Api-Key": SONARR_API_KEY},
     timeout=30,
 )
+
+# Separate client for Sonarr's unauthenticated, unversioned /api discovery
+# endpoint (not under /api/{version}, and needs no X-Api-Key).
+discovery_client = httpx.Client(base_url=SONARR_URL, timeout=5)
 
 mcp = MCPServer("sonarr")
 
@@ -156,6 +170,30 @@ async def health(request: Request) -> Response:
     return JSONResponse({"status": "ok"})
 
 
+def _check_api_version() -> dict:
+    """Compare SONARR_API_VERSION against what Sonarr's own /api discovery
+    endpoint reports as current/deprecated. Best-effort: a failure here
+    (e.g. an old Sonarr without this endpoint) doesn't fail /ready on its
+    own — only a version Sonarr no longer serves at all does."""
+    try:
+        response = discovery_client.get("/api")
+        response.raise_for_status()
+        info = response.json()
+    except httpx.HTTPError:
+        return {"checked": False}
+
+    current = info.get("current")
+    deprecated = info.get("deprecated", [])
+    supported = SONARR_API_VERSION == current or SONARR_API_VERSION in deprecated
+    return {
+        "checked": True,
+        "configured": SONARR_API_VERSION,
+        "current": current,
+        "deprecated": deprecated,
+        "supported": supported,
+    }
+
+
 @mcp.custom_route("/ready", methods=["GET"])
 async def ready(request: Request) -> Response:
     """Readiness check: SONARR_URL is reachable and SONARR_API_KEY is valid."""
@@ -180,12 +218,30 @@ async def ready(request: Request) -> Response:
             status_code=503,
         )
 
+    api_version = _check_api_version()
+    if api_version["checked"] and not api_version["supported"]:
+        return JSONResponse(
+            {
+                "status": "error",
+                "reachable": True,
+                "authenticated": True,
+                "apiVersion": api_version,
+                "error": (
+                    f"Sonarr no longer serves API {SONARR_API_VERSION!r} "
+                    f"(current: {api_version['current']!r}, deprecated: {api_version['deprecated']!r}); "
+                    "set SONARR_API_VERSION to match"
+                ),
+            },
+            status_code=503,
+        )
+
     return JSONResponse(
         {
             "status": "ok",
             "reachable": True,
             "authenticated": True,
             "sonarr": {"url": SONARR_URL, "version": response.json().get("version")},
+            "apiVersion": api_version,
         }
     )
 
