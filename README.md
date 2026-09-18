@@ -32,7 +32,7 @@ secret):
 | Endpoint | Checks | Healthy | Unhealthy |
 |---|---|---|---|
 | `GET /health` | The process is up and serving HTTP. Does **not** call Sonarr. | `200 {"status": "ok"}` | (doesn't respond) |
-| `GET /ready` | `SONARR_URL` is reachable *and* `SONARR_API_KEY` is accepted, by calling Sonarr's own `/system/status`. | `200 {"status": "ok", "reachable": true, "authenticated": true, "sonarr": {"url": ..., "version": ...}}` | `503 {"status": "error", "reachable": ..., "authenticated": ..., "error": "..."}` |
+| `GET /ready` | `SONARR_URL` is reachable, `SONARR_API_KEY` is accepted (via Sonarr's `/system/status`), *and* `SONARR_API_VERSION` is still an API version Sonarr serves (see [API version checking](#api-version-checking)). | `200 {"status": "ok", "reachable": true, "authenticated": true, "sonarr": {...}, "apiVersion": {...}}` | `503 {"status": "error", "reachable": ..., "authenticated": ..., "error": "..."}` |
 
 They're split deliberately: `/health` is what the container's own
 `HEALTHCHECK` uses (so a transient Sonarr outage doesn't get the container
@@ -70,17 +70,63 @@ Environment variables (see `.env.example`):
 |---|---|---|---|
 | `SONARR_URL` | yes | — | e.g. `http://192.168.1.50:8989` |
 | `SONARR_API_KEY` | yes | — | Sonarr > Settings > General > API Key |
+| `SONARR_API_VERSION` | no | `v3` | Sonarr REST API version to call (`/api/<version>/...`) |
 | `MCP_HOST` | no | `0.0.0.0` | Interface the server binds to inside the container |
 | `MCP_PORT` | no | `8931` | Port the server listens on |
 | `MCP_AUTH_TOKEN` | no | — | Shared secret required as `Authorization: Bearer <token>`. Unset = no auth (see above) |
 
+### API version checking
+
+Sonarr exposes an unauthenticated, unversioned `GET /api` endpoint that
+reports which API version is current and which are deprecated (e.g.
+`{"current": "v3", "deprecated": []}` — see
+[`ApiInfoController`](https://github.com/Sonarr/Sonarr/blob/develop/src/Sonarr.Http/ApiInfoController.cs)
+in Sonarr's source). `GET /ready` calls it and compares it against
+`SONARR_API_VERSION`:
+
+- version matches `current`, or is listed under `deprecated` (still served,
+  just on notice) → healthy, reported under the response's `apiVersion` key.
+- version isn't offered at all any more → `503`, since every tool call
+  would otherwise start failing with 404s. Bump `SONARR_API_VERSION` to
+  match what Sonarr now reports.
+- Sonarr doesn't have this endpoint (very old versions) or it's
+  unreachable → non-fatal, `apiVersion: {"checked": false}`.
+
+This turns a silent break on a Sonarr upgrade into a readiness-probe
+failure instead.
+
 ## Image
 
-Built and pushed to `ghcr.io/barrow1990/sonarr-mcp-server:latest` by
+Built and pushed to `ghcr.io/barrow1990/sonarr-mcp-server` by
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on every push to
-`master` that passes tests (also tagged with the commit SHA). `docker-compose.yml`
-pulls this image by default; swap in `build: .` there instead if you'd rather
-build locally from the `Dockerfile`.
+`master` that passes tests, tagged `:latest`, `:<commit-sha>`, and
+`:sonarr-<api-version>` (e.g. `:sonarr-v3` — the Sonarr API version this
+build targets, read out of `server.py`'s `SONARR_API_VERSION` default so it
+can't drift from what the code actually calls). `docker-compose.yml` pulls
+`:latest` by default; swap in `build: .` there instead if you'd rather build
+locally from the `Dockerfile`.
+
+The image is a three-stage build: `builder` compiles dependencies into
+`--target=/deps` (all of them, including `cryptography`'s compiled `cffi`
+extension, ship musllinux wheels, so this needs no compiler even on alpine);
+`prep` starts fresh from `python:3.12-alpine`, drops pip/setuptools/wheel,
+strips stdlib pieces this headless server never touches (`tkinter`,
+`idlelib`, `lib2to3`, `ensurepip`, ...), adds the non-root `app` user, and
+copies in `/deps` and `server.py`; `runtime` then does a single
+`COPY --from=prep / /` onto a `scratch` base. That last step matters more
+than it looks — a plain `RUN rm -rf` only *hides* files still physically
+present in the base image's own layers underneath, so it doesn't shrink a
+normal layered image at all; copying the already-trimmed filesystem onto
+`scratch` is what actually drops those bytes from what gets pushed.
+
+That takes the published image from 261MB down to **~98MB**. The floor from
+here is `mcp`'s own dependency graph: `mcp.server.request_state` unconditionally
+imports `cryptography`'s AES-GCM/HKDF (spec-mandated integrity protection for
+MCP's `requestState`, not something gated behind JWT/OAuth use), so its
+~15MB native extension ships regardless. Dependencies in `requirements.txt`
+are pinned to exact versions rather than `>=` ranges, so a routine
+`docker build` can't silently pull in a heavier resolution than
+the one that was actually tested.
 
 ## Running with Docker Compose
 

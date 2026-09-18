@@ -33,6 +33,13 @@ def test_ready_success(mock_sonarr, no_auth):
         "reachable": True,
         "authenticated": True,
         "sonarr": {"url": server.SONARR_URL, "version": "4.0.9"},
+        "apiVersion": {
+            "checked": True,
+            "configured": server.SONARR_API_VERSION,
+            "current": server.SONARR_API_VERSION,
+            "deprecated": [],
+            "supported": True,
+        },
     }
 
 
@@ -75,6 +82,57 @@ def test_ready_other_sonarr_error(mock_sonarr, no_auth):
     assert body["reachable"] is True
     assert body["authenticated"] is True
     assert "HTTP 500" in body["error"]
+
+
+def test_ready_unsupported_api_version(mock_sonarr, mock_discovery, no_auth):
+    mock_sonarr(lambda req: httpx.Response(200, json={"version": "5.0.0"}))
+    mock_discovery(lambda req: httpx.Response(200, json={"current": "v4", "deprecated": ["v2"]}))
+
+    with TestClient(server.build_app()) as client:
+        response = client.get("/ready")
+
+    body = response.json()
+    assert response.status_code == 503
+    assert body["reachable"] is True
+    assert body["authenticated"] is True
+    assert body["apiVersion"] == {
+        "checked": True,
+        "configured": server.SONARR_API_VERSION,
+        "current": "v4",
+        "deprecated": ["v2"],
+        "supported": False,
+    }
+    assert server.SONARR_API_VERSION in body["error"]
+
+
+def test_ready_deprecated_but_still_supported_api_version(mock_sonarr, mock_discovery, no_auth):
+    mock_sonarr(lambda req: httpx.Response(200, json={"version": "5.0.0"}))
+    mock_discovery(
+        lambda req: httpx.Response(200, json={"current": "v4", "deprecated": [server.SONARR_API_VERSION]})
+    )
+
+    with TestClient(server.build_app()) as client:
+        response = client.get("/ready")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["apiVersion"]["supported"] is True
+
+
+def test_ready_discovery_endpoint_unavailable_is_non_fatal(mock_sonarr, mock_discovery, no_auth):
+    mock_sonarr(lambda req: httpx.Response(200, json={"version": "3.0.0"}))
+
+    def handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    mock_discovery(handler)
+
+    with TestClient(server.build_app()) as client:
+        response = client.get("/ready")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["apiVersion"] == {"checked": False}
 
 
 def test_no_auth_token_leaves_mcp_open(mock_sonarr, no_auth):
