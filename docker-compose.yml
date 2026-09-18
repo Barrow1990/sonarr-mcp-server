@@ -8,6 +8,7 @@ services:
       SONARR_API_KEY: ${SONARR_API_KEY}
       MCP_HOST: 0.0.0.0
       MCP_PORT: 8931
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN}
     ports:
       # Bind only to the host's LAN-facing address if you want to be strict
       # about which interface this is reachable on, e.g. "192.168.1.50:8931:8931".

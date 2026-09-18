@@ -11,19 +11,34 @@ Configuration is via environment variables:
   SONARR_API_KEY  Sonarr > Settings > General > API Key (required)
   MCP_HOST        interface to bind to (default 0.0.0.0)
   MCP_PORT        port to listen on (default 8931)
+  MCP_AUTH_TOKEN  shared secret required as `Authorization: Bearer <token>`
+                  on every request (optional — if unset, the server is open
+                  to anyone who can reach it; see README for why that's a
+                  real trade-off, not just a default to ignore)
 
 Transport: streamable-http. This runs as a standing network service (bind
 0.0.0.0 inside the container; publish the port only on your internal
 network/VLAN — never forward it externally) rather than being spawned
 per-client over stdio, so any MCP client on the LAN can connect to
 http://<host>:<port>/mcp.
+
+Auth here is a single shared bearer token checked by plain middleware, not
+the SDK's built-in OAuth support (mcp.server.auth) — that machinery expects
+a full OAuth authorization server (issuer/resource metadata, RFC 8414/8707/
+9068 discovery), which is unwarranted complexity for a single internal
+secret shared by trusted LAN clients.
 """
 
+import hmac
 import os
 import sys
 
 import httpx
+import uvicorn
 from mcp.server.mcpserver import MCPServer
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 
 def _require_env(name: str) -> str:
@@ -38,6 +53,7 @@ SONARR_URL = _require_env("SONARR_URL").rstrip("/")
 SONARR_API_KEY = _require_env("SONARR_API_KEY")
 MCP_HOST = os.environ.get("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8931"))
+MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN")
 
 client = httpx.Client(
     base_url=f"{SONARR_URL}/api/v3",
@@ -129,5 +145,24 @@ def system_status() -> dict:
     return {"status": status, "diskSpace": disk_space, "health": health}
 
 
+class BearerTokenMiddleware(BaseHTTPMiddleware):
+    """Require `Authorization: Bearer <MCP_AUTH_TOKEN>` on every request."""
+
+    async def dispatch(self, request: Request, call_next):
+        header = request.headers.get("authorization", "")
+        scheme, _, token = header.partition(" ")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(token, MCP_AUTH_TOKEN):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", host=MCP_HOST, port=MCP_PORT)
+    app = mcp.streamable_http_app(host=MCP_HOST)
+
+    if MCP_AUTH_TOKEN:
+        app.add_middleware(BearerTokenMiddleware)
+        print("Auth enabled: Authorization: Bearer <token> required", file=sys.stderr)
+    else:
+        print("WARNING: MCP_AUTH_TOKEN not set — server is open to anyone who can reach it", file=sys.stderr)
+
+    uvicorn.run(app, host=MCP_HOST, port=MCP_PORT)

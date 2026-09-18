@@ -23,21 +23,27 @@ container lifecycle/updates can be handed off to a tool like
 `search_series` is the only tool that changes state in Sonarr (it kicks off a
 real search/download). Everything else is read-only.
 
-## ⚠️ No authentication
+## Authentication
 
-This server has no auth of its own — anything that can reach
-`http://<host>:<port>/mcp` can call every tool, including `search_series`.
-That's by design for a simple internal deployment, but it means the trust
-boundary is entirely the network:
+Set `MCP_AUTH_TOKEN` (a random shared secret — `openssl rand -hex 32`) and
+every request must carry `Authorization: Bearer <token>` or the server
+returns `401`. This is checked by a small Starlette middleware in front of
+the MCP app, **not** the `mcp` SDK's built-in OAuth support
+(`mcp.server.auth`) — that machinery expects a full OAuth authorization
+server (issuer/resource metadata, RFC 8414/8707/9068 discovery), which is
+unnecessary complexity for one secret shared by trusted LAN clients.
+
+Leave `MCP_AUTH_TOKEN` unset and the server runs with **no auth** — anything
+that can reach `http://<host>:<port>/mcp` can call every tool, including
+`search_series`. The server logs a warning on startup when it's running this
+way. Either way, the trust boundary is still the network:
 
 - **Do not** publish this port through any reverse proxy, port-forward, or
-  anything else reachable from outside your LAN/VLAN.
+  anything else reachable from outside your LAN/VLAN — the bearer token
+  protects against anyone *on* the network, not against the open internet.
 - Bind the compose `ports:` mapping to a specific internal interface (e.g.
   `192.168.1.50:8931:8931`) rather than all interfaces, if you want to be
-  stricter about which hosts on your network can reach it.
-- If you later want to restrict *who* on the LAN can call it, put it behind
-  something like a reverse proxy with IP allowlisting, or add auth to
-  `server.py` — the `mcp` SDK supports `token_verifier`/OAuth on `MCPServer`.
+  stricter about which hosts on your network can reach it at all.
 
 ## Configuration
 
@@ -49,6 +55,7 @@ Environment variables (see `.env.example`):
 | `SONARR_API_KEY` | yes | — | Sonarr > Settings > General > API Key |
 | `MCP_HOST` | no | `0.0.0.0` | Interface the server binds to inside the container |
 | `MCP_PORT` | no | `8931` | Port the server listens on |
+| `MCP_AUTH_TOKEN` | no | — | Shared secret required as `Authorization: Bearer <token>`. Unset = no auth (see above) |
 
 ## Running with Docker Compose
 
@@ -74,8 +81,10 @@ and host reboots bring it back up without manual intervention.
 ### Claude Code
 
 ```bash
-claude mcp add sonarr -s user --transport http http://<docker-host>:8931/mcp
+claude mcp add sonarr -s user --transport http http://<docker-host>:8931/mcp \
+  --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
 ```
+(Drop the `--header` flag if you're running with `MCP_AUTH_TOKEN` unset.)
 
 ### Claude Desktop
 
@@ -88,7 +97,10 @@ a network server like this you'll need an HTTP-to-stdio bridge such as
   "mcpServers": {
     "sonarr": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "http://<docker-host>:8931/mcp"]
+      "args": [
+        "-y", "mcp-remote", "http://<docker-host>:8931/mcp",
+        "--header", "Authorization: Bearer <MCP_AUTH_TOKEN>"
+      ]
     }
   }
 }
@@ -98,7 +110,8 @@ a network server like this you'll need an HTTP-to-stdio bridge such as
 
 ```bash
 pip install -r requirements.txt
-SONARR_URL=http://192.168.1.50:8989 SONARR_API_KEY=your-api-key python server.py
+SONARR_URL=http://192.168.1.50:8989 SONARR_API_KEY=your-api-key \
+MCP_AUTH_TOKEN=your-shared-secret python server.py
 ```
 
 ## License
