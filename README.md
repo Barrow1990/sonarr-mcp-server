@@ -23,6 +23,23 @@ container lifecycle/updates can be handed off to a tool like
 `search_series` is the only tool that changes state in Sonarr (it kicks off a
 real search/download). Everything else is read-only.
 
+## Health endpoints
+
+Two plain HTTP endpoints, reachable without `MCP_AUTH_TOKEN` (so Docker's
+`HEALTHCHECK`, Dockhand, or any other monitor can poll them without the
+secret):
+
+| Endpoint | Checks | Healthy | Unhealthy |
+|---|---|---|---|
+| `GET /health` | The process is up and serving HTTP. Does **not** call Sonarr. | `200 {"status": "ok"}` | (doesn't respond) |
+| `GET /ready` | `SONARR_URL` is reachable *and* `SONARR_API_KEY` is accepted, by calling Sonarr's own `/system/status`. | `200 {"status": "ok", "reachable": true, "authenticated": true, "sonarr": {"url": ..., "version": ...}}` | `503 {"status": "error", "reachable": ..., "authenticated": ..., "error": "..."}` |
+
+They're split deliberately: `/health` is what the container's own
+`HEALTHCHECK` uses (so a transient Sonarr outage doesn't get the container
+itself restarted in a loop), while `/ready` is for verifying config — after
+changing `SONARR_URL`/`SONARR_API_KEY`, `curl http://<host>:8931/ready` tells
+you plainly whether the host is reachable, the key is valid, or both.
+
 ## Authentication
 
 Set `MCP_AUTH_TOKEN` (a random shared secret — `openssl rand -hex 32`) and
@@ -74,7 +91,10 @@ and redeploy automatically when this repo updates, or build/push the image to
 a registry and let Dockhand track new tags — either flow works since the
 container just needs to keep listening on `MCP_PORT`. Set a restart policy of
 `unless-stopped` (already in `docker-compose.yml`) so Dockhand-driven restarts
-and host reboots bring it back up without manual intervention.
+and host reboots bring it back up without manual intervention. The
+`HEALTHCHECK` in the `Dockerfile` (`GET /health`) drives Docker's/Dockhand's
+container health status; use `GET /ready` (see above) separately if you want
+to alert on Sonarr connectivity specifically rather than container liveness.
 
 ## Connecting a client
 

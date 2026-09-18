@@ -38,7 +38,7 @@ import uvicorn
 from mcp.server.mcpserver import MCPServer
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 
 def _require_env(name: str) -> str:
@@ -145,10 +145,59 @@ def system_status() -> dict:
     return {"status": status, "diskSpace": disk_space, "health": health}
 
 
+# Paths that must stay reachable without MCP_AUTH_TOKEN, so Docker's own
+# HEALTHCHECK, Dockhand's health probe, etc. don't need the secret.
+UNAUTHENTICATED_PATHS = {"/health", "/ready"}
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> Response:
+    """Liveness check: the process is up and serving HTTP. Does not call Sonarr."""
+    return JSONResponse({"status": "ok"})
+
+
+@mcp.custom_route("/ready", methods=["GET"])
+async def ready(request: Request) -> Response:
+    """Readiness check: SONARR_URL is reachable and SONARR_API_KEY is valid."""
+    try:
+        response = client.get("/system/status", timeout=5)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as error:
+        status_code = error.response.status_code
+        reason = "invalid Sonarr API key" if status_code == 401 else f"Sonarr returned HTTP {status_code}"
+        return JSONResponse(
+            {"status": "error", "reachable": True, "authenticated": status_code != 401, "error": reason},
+            status_code=503,
+        )
+    except httpx.RequestError as error:
+        return JSONResponse(
+            {
+                "status": "error",
+                "reachable": False,
+                "authenticated": False,
+                "error": f"cannot reach Sonarr at {SONARR_URL}: {error}",
+            },
+            status_code=503,
+        )
+
+    return JSONResponse(
+        {
+            "status": "ok",
+            "reachable": True,
+            "authenticated": True,
+            "sonarr": {"url": SONARR_URL, "version": response.json().get("version")},
+        }
+    )
+
+
 class BearerTokenMiddleware(BaseHTTPMiddleware):
-    """Require `Authorization: Bearer <MCP_AUTH_TOKEN>` on every request."""
+    """Require `Authorization: Bearer <MCP_AUTH_TOKEN>` on every request except
+    the health/readiness endpoints, which are meant to be publicly pollable."""
 
     async def dispatch(self, request: Request, call_next):
+        if request.url.path in UNAUTHENTICATED_PATHS:
+            return await call_next(request)
+
         header = request.headers.get("authorization", "")
         scheme, _, token = header.partition(" ")
         if scheme.lower() != "bearer" or not hmac.compare_digest(token, MCP_AUTH_TOKEN):
