@@ -205,7 +205,9 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-if __name__ == "__main__":
+def build_app():
+    """Build the ASGI app (routes + auth middleware). Split out from __main__ so
+    tests can exercise the real, fully-wired app without going through uvicorn."""
     app = mcp.streamable_http_app(host=MCP_HOST)
 
     if MCP_AUTH_TOKEN:
@@ -214,4 +216,8 @@ if __name__ == "__main__":
     else:
         print("WARNING: MCP_AUTH_TOKEN not set — server is open to anyone who can reach it", file=sys.stderr)
 
-    uvicorn.run(app, host=MCP_HOST, port=MCP_PORT)
+    return app
+
+
+if __name__ == "__main__":
+    uvicorn.run(build_app(), host=MCP_HOST, port=MCP_PORT)

@@ -1,7 +1,9 @@
 services:
   sonarr-mcp:
-    build: .
-    image: sonarr-mcp-server
+    # Built and pushed by .github/workflows/ci.yml on every push to master.
+    # Use `build: .` instead (and drop this `image:` line) if you'd rather
+    # build locally from the Dockerfile — both work against this same file.
+    image: ghcr.io/barrow1990/sonarr-mcp-server:latest
     container_name: sonarr-mcp
     # SONARR_URL / SONARR_API_KEY / MCP_AUTH_TOKEN are loaded from these
     # files directly (not via `environment: ${VAR}` substitution, which

@@ -74,11 +74,19 @@ Environment variables (see `.env.example`):
 | `MCP_PORT` | no | `8931` | Port the server listens on |
 | `MCP_AUTH_TOKEN` | no | — | Shared secret required as `Authorization: Bearer <token>`. Unset = no auth (see above) |
 
+## Image
+
+Built and pushed to `ghcr.io/barrow1990/sonarr-mcp-server:latest` by
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) on every push to
+`master` that passes tests (also tagged with the commit SHA). `docker-compose.yml`
+pulls this image by default; swap in `build: .` there instead if you'd rather
+build locally from the `Dockerfile`.
+
 ## Running with Docker Compose
 
 ```bash
 cp .env.example .env   # fill in SONARR_URL / SONARR_API_KEY
-docker compose up -d --build
+docker compose up -d --pull always
 ```
 
 The server is then reachable at `http://<docker-host>:8931/mcp` from anything
@@ -86,15 +94,28 @@ on your internal network.
 
 ## Managing with Dockhand
 
-Point Dockhand at this repo as a Compose stack (Git-deploy) to pull, build,
-and redeploy automatically when this repo updates, or build/push the image to
-a registry and let Dockhand track new tags — either flow works since the
-container just needs to keep listening on `MCP_PORT`. Set a restart policy of
-`unless-stopped` (already in `docker-compose.yml`) so Dockhand-driven restarts
-and host reboots bring it back up without manual intervention. The
-`HEALTHCHECK` in the `Dockerfile` (`GET /health`) drives Docker's/Dockhand's
-container health status; use `GET /ready` (see above) separately if you want
-to alert on Sonarr connectivity specifically rather than container liveness.
+Point Dockhand at `ghcr.io/barrow1990/sonarr-mcp-server` and let it track new
+tags — this is the registry-pull model Dockhand's image-update tracking
+(Grype/Trivy scans, tag tracking, scheduled updates) is actually built around.
+The alternative, pointing Dockhand at this repo as a Git-deployed Compose
+stack with `build: .`, works too, but syncing new Git commits does **not**
+imply rebuilding the image — those are two separate steps for a build-from-
+source stack, which is exactly what caused the stale-container issues this
+project hit early on (see commit history). The registry model sidesteps that
+class of bug entirely: "new tag available" and "pull + recreate" are one
+action.
+
+**Make the GHCR package public**, or every pull will need `docker login
+ghcr.io` with a PAT on each deploy host — a private package by default
+requires auth even to `docker pull`, which most homelab boxes won't have
+configured.
+
+Set a restart policy of `unless-stopped` (already in `docker-compose.yml`) so
+Dockhand-driven restarts and host reboots bring it back up without manual
+intervention. The `HEALTHCHECK` in the `Dockerfile` (`GET /health`) drives
+Docker's/Dockhand's container health status; use `GET /ready` (see above)
+separately if you want to alert on Sonarr connectivity specifically rather
+than container liveness.
 
 **Environment variables in Dockhand**: `docker-compose.yml` loads
 `SONARR_URL`/`SONARR_API_KEY`/`MCP_AUTH_TOKEN` via `env_file: [.env, .env.dockhand]`
@@ -145,6 +166,30 @@ pip install -r requirements.txt
 SONARR_URL=http://192.168.1.50:8989 SONARR_API_KEY=your-api-key \
 MCP_AUTH_TOKEN=your-shared-secret python server.py
 ```
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+- `tests/test_tools.py` — each tool's logic against a mocked Sonarr
+  (`httpx.MockTransport`, no extra mocking library needed).
+- `tests/test_http.py` — `/health`, `/ready`, and the bearer-auth middleware,
+  via `server.build_app()` (the exact app `__main__` runs) through Starlette's
+  `TestClient`.
+- `tests/test_live_sonarr.py` — **opt-in** contract tests against a real
+  Sonarr instance, to catch drift if a Sonarr upgrade renames/removes a field
+  these tools depend on (`id`, `title`, `statistics.percentOfEpisodes`,
+  `tvdbId`, `version`, ...). Skipped by default (no Sonarr in CI); run with:
+  ```bash
+  RUN_LIVE_SONARR_TESTS=1 SONARR_URL=https://sonarr.example.com \
+  SONARR_API_KEY=<real key> python -m pytest tests/test_live_sonarr.py -v
+  ```
+
+CI (`.github/workflows/ci.yml`) runs the mocked suite on every push/PR; the
+GHCR build only runs after it passes.
 
 ## License
 
