@@ -25,6 +25,11 @@ LABEL org.opencontainers.image.source="https://github.com/barrow1990/sonarr-mcp-
       org.opencontainers.image.licenses="MIT" \
       io.sonarr-mcp.api-version="${SONARR_API_VERSION}"
 
+# Set before the pip-uninstall RUN below, not just at the bottom of this
+# stage — otherwise that invocation writes ~4MB of stdlib __pycache__ as a
+# side effect of running `python -m pip` at all.
+ENV PYTHONDONTWRITEBYTECODE=1
+
 # Runtime has no compiler/pip of its own to install arbitrary packages with —
 # only the exact library files the builder stage resolved.
 RUN python -m pip uninstall -y pip setuptools wheel 2>/dev/null || true
@@ -36,7 +41,6 @@ COPY --from=builder /deps /deps
 COPY server.py .
 
 ENV PYTHONPATH=/deps \
-    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 USER app

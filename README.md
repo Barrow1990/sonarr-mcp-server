@@ -112,9 +112,13 @@ stage that copies just those library files and drops pip/setuptools/wheel
 entirely) and runs as a non-root user. All dependencies — including
 `cryptography`'s compiled `cffi` extension — ship musllinux wheels, so the
 alpine base needs no compiler at build time. This keeps the published image
-around 125MB, less than half the `python:3.12-slim` equivalent. Dependencies
-in `requirements.txt` are pinned to exact versions rather than `>=` ranges,
-so a routine `docker build` can't silently pull in a heavier resolution than
+around 120MB: the `python:3.12-alpine` base is ~75MB on its own, and the
+`mcp` SDK unconditionally imports `cryptography` (for its internal
+request-state encryption, in `mcp/server/request_state.py`) whether or not
+the app uses JWT/OAuth, so its ~15MB native extension can't be dropped
+without patching the SDK. Dependencies in `requirements.txt` are pinned to
+exact versions rather than `>=` ranges, so a routine `docker build` can't
+silently pull in a heavier resolution than
 the one that was actually tested.
 
 ## Running with Docker Compose
