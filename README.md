@@ -96,6 +96,18 @@ and host reboots bring it back up without manual intervention. The
 container health status; use `GET /ready` (see above) separately if you want
 to alert on Sonarr connectivity specifically rather than container liveness.
 
+**Environment variables in Dockhand**: `docker-compose.yml` loads
+`SONARR_URL`/`SONARR_API_KEY`/`MCP_AUTH_TOKEN` via `env_file: [.env, .env.dockhand]`
+(both optional; `.env.dockhand` loads second, so it wins for any key it also
+sets). This is deliberate — a Git-deployed stack's `.env` is whatever's
+checked out from the repo (i.e. `.env.example`'s placeholders, since real
+`.env` is gitignored and not committed), while Dockhand writes the values you
+configure in its UI to `.env.dockhand` instead. If you set `SONARR_URL` in
+Dockhand's UI and the container is still using a placeholder, check that
+Dockhand is actually writing to `.env.dockhand` in the stack directory (not
+some other file) and that a rebuild has run since — a synced Git file change
+alone doesn't rebuild the image; see `GET /ready` to confirm what's live.
+
 ## Connecting a client
 
 ### Claude Code
