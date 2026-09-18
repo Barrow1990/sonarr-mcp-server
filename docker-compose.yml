@@ -6,10 +6,12 @@ services:
     environment:
       SONARR_URL: ${SONARR_URL}
       SONARR_API_KEY: ${SONARR_API_KEY}
-    # stdio-only server: no ports are published. Claude Code attaches to the
-    # running container's stdin/stdout, or spawns `docker run -i` directly
-    # (see README). `stdin_open`/`tty` keep this compose service usable for
-    # manual `docker attach` testing.
-    stdin_open: true
-    tty: false
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8931
+    ports:
+      # Bind only to the host's LAN-facing address if you want to be strict
+      # about which interface this is reachable on, e.g. "192.168.1.50:8931:8931".
+      # Do not put this behind any external/WAN-facing reverse proxy or port
+      # forward — it has no authentication.
+      - "8931:8931"
     restart: unless-stopped

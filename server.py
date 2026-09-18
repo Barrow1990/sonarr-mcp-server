@@ -9,8 +9,14 @@ trigger downloads via Sonarr's REST API.
 Configuration is via environment variables:
   SONARR_URL      e.g. http://192.168.1.50:8989 (required)
   SONARR_API_KEY  Sonarr > Settings > General > API Key (required)
+  MCP_HOST        interface to bind to (default 0.0.0.0)
+  MCP_PORT        port to listen on (default 8931)
 
-Transport: stdio (the standard MCP transport for locally-spawned servers).
+Transport: streamable-http. This runs as a standing network service (bind
+0.0.0.0 inside the container; publish the port only on your internal
+network/VLAN — never forward it externally) rather than being spawned
+per-client over stdio, so any MCP client on the LAN can connect to
+http://<host>:<port>/mcp.
 """
 
 import os
@@ -30,6 +36,8 @@ def _require_env(name: str) -> str:
 
 SONARR_URL = _require_env("SONARR_URL").rstrip("/")
 SONARR_API_KEY = _require_env("SONARR_API_KEY")
+MCP_HOST = os.environ.get("MCP_HOST", "0.0.0.0")
+MCP_PORT = int(os.environ.get("MCP_PORT", "8931"))
 
 client = httpx.Client(
     base_url=f"{SONARR_URL}/api/v3",
@@ -122,4 +130,4 @@ def system_status() -> dict:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="streamable-http", host=MCP_HOST, port=MCP_PORT)
