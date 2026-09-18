@@ -1,0 +1,15 @@
+services:
+  sonarr-mcp:
+    build: .
+    image: sonarr-mcp-server
+    container_name: sonarr-mcp
+    environment:
+      SONARR_URL: ${SONARR_URL}
+      SONARR_API_KEY: ${SONARR_API_KEY}
+    # stdio-only server: no ports are published. Claude Code attaches to the
+    # running container's stdin/stdout, or spawns `docker run -i` directly
+    # (see README). `stdin_open`/`tty` keep this compose service usable for
+    # manual `docker attach` testing.
+    stdin_open: true
+    tty: false
+    restart: unless-stopped
