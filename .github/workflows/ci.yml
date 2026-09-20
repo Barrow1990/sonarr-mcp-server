@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, dev]
   pull_request:
-    branches: [master]
+    branches: [master, dev]
 
 jobs:
   test:
@@ -27,7 +27,7 @@ jobs:
 
   docker:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -58,6 +58,27 @@ jobs:
           API_VERSION=$(python3 -c "import re; print(re.search(r'os\.environ\.get\\(\"SONARR_API_VERSION\", \"([^\"]+)\"\\)', open('server.py').read()).group(1))")
           echo "SONARR_API_VERSION=$API_VERSION" >> "$GITHUB_ENV"
 
+      # `dev` builds publish only :dev and :dev-<sha>; they never touch :latest (or any
+      # other release tag), so the production stack can't pick up an unmerged build.
+      - name: Compute image tags
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/dev" ]; then
+            {
+              echo 'TAGS<<EOF'
+              echo "${IMAGE}:dev"
+              echo "${IMAGE}:dev-${GITHUB_SHA}"
+              echo 'EOF'
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo 'TAGS<<EOF'
+              echo "${IMAGE}:latest"
+              echo "${IMAGE}:${GITHUB_SHA}"
+              echo "${IMAGE}:sonarr-${SONARR_API_VERSION}"
+              echo 'EOF'
+            } >> "$GITHUB_ENV"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -65,9 +86,6 @@ jobs:
           push: true
           build-args: |
             SONARR_API_VERSION=${{ env.SONARR_API_VERSION }}
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ github.sha }}
-            ${{ env.IMAGE }}:sonarr-${{ env.SONARR_API_VERSION }}
+          tags: ${{ env.TAGS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
